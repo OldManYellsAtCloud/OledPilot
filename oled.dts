@@ -1,0 +1,21 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+	target = <&i2c1>;
+	__overlay__ {
+	    status = "okay";
+
+	    #address-cells = <1>;
+	    #size-cells = <0>;
+
+	    oled: oled@3c{
+		compatible = "monochrome,oled";
+		reg = <0x3c>;
+	    };
+	};
+    };
+};
