@@ -100,17 +100,19 @@ static ssize_t oled_fb_write(struct fb_info *info, const char __user *buf,
 
 static ssize_t oled_fb_read(struct fb_info *info, char __user *buf,
                             size_t count, loff_t *ppos){
-    char back[] = "brah";
+    char back[] = "test read";
     int ret;
+    size_t len = strlen(back);
 
-    if (*ppos > 0){
+    if (*ppos >= len){
         return 0;
     }
     ret = copy_to_user(buf, back, strlen(back));
     if (ret < 0){
         pr_err("Could not copy stuff to user! Error: %d\n", ret);
     }
-    return strlen(back);
+    *ppos += len;
+    return len;
 }
 
 static int oled_fb_release(struct fb_info *info, int user){
@@ -121,11 +123,82 @@ static int oled_fb_release(struct fb_info *info, int user){
 static int oled_fb_blank(int blank, struct fb_info *info){
     struct oled_info *oinfo;
     oinfo = oled_find_info_by_fb_info(info);
-    memset(oinfo->buf, 0, 128 * 8);
-    oled_send_message(oinfo->client, CMD_SET_START_COL, SIZE_SET_START_COL);
+
+    switch (blank){
+    case FB_BLANK_NORMAL:
+        oled_send_message(oinfo->client, CMD_DISPLAY_OFF, SIZE_DISPLAY_OFF);
+        break;
+    case FB_BLANK_UNBLANK:
+        oled_send_message(oinfo->client, CMD_DISPLAY_OFF, SIZE_DISPLAY_ON);
+        break;
+    default:
+        return -ENOSYS;
+    }
+
+    /*oled_send_message(oinfo->client, CMD_SET_START_COL, SIZE_SET_START_COL);
     oled_send_message(oinfo->client, CMD_SET_END_COL, SIZE_SET_END_COL);
-    oled_update_screen(oinfo);
+
+    memset(oinfo->buf, 0, 128 * 8);
+
+    oled_update_screen(oinfo);*/
     return 0;
+}
+
+static void oled_fb_fillrect(struct fb_info *info, const struct fb_fillrect *rect){
+    struct oled_info *oinfo;
+    size_t x, y, pos;
+    uint8_t color;
+    if (rect->dx + rect->width > 128){
+        pr_err("Width is too big!\n");
+    }
+
+    if (rect->dy + rect->height > 64){
+        pr_err("Height is too big!\n");
+    }
+
+    oinfo = oled_find_info_by_fb_info(info);
+    color = rect->color ? 0x1 : 0x0;
+
+    for (x = rect->dx; x < rect->dx + rect->width; ++x){
+        for (y = rect->dy; y < rect->dy + rect->height; ++y){
+            oinfo->buf[(int)(y / 8) * 128 + x] &= ~color << (y % 8);
+        }
+    }
+
+    oled_update_screen(oinfo);
+}
+
+static int oled_get_pixel_at(struct oled_info *info, size_t x, size_t y){
+    return (info->buf[(int)(y / 8) * 128 + x] >> (y % 8)) & 0x1;
+}
+
+static void oled_fb_copyarea(struct fb_info *info, const struct fb_copyarea *region){
+    struct oled_info *oinfo;
+    size_t x, y;
+    uint8_t *buf;
+    oinfo = oled_find_info_by_fb_info(info);
+    buf = kzalloc((region->height * region->width) / 8 + 1, GFP_KERNEL);
+    // note: should break up pixels to bytes (instead of bits), and go with memcpy/memmove?
+    for (x = 0; x < region->width; x++){
+        for (y = 0; y < region->height; ++y){
+            buf[(int)(y / 8) * 128 + x] |= (oled_get_pixel_at(oinfo, x + region->sx, y +region->sy) << (y % 8));
+        }
+    }
+
+    for (x = 0; x < region->width; ++x){
+        for (y = 0; y < region->height; ++y){
+            oinfo->buf[(int)((y + region->dy) / 8) * 128 + x + region->dx] =
+                buf[(int)(y / 8) * 128 + x];
+        }
+    }
+    kfree(buf);
+    oled_update_screen(oinfo);
+}
+
+static void oled_fb_imageblit (struct fb_info *info, const struct fb_image *image){
+    struct oled_info *oinfo;
+    oinfo = oled_find_info_by_fb_info(info);
+    pr_info("Image x: %d, y: %d, w: %d, h: %d, depth: %d\n", image->dx, image->dy, image->width, image->height, image->depth);
 }
 
 static const struct of_device_id oled_of_match[] = {
@@ -143,7 +216,9 @@ static struct fb_ops fops = {
     .fb_open = oled_fb_open,
     .fb_write = oled_fb_write,
     .fb_read = oled_fb_read,
-    .fb_release = oled_fb_release
+    .fb_release = oled_fb_release,
+    .fb_fillrect = oled_fb_fillrect,
+    .fb_copyarea = oled_fb_copyarea
 };
 
 static const struct fb_fix_screeninfo fix_screeninfo = {
