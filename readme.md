@@ -12,3 +12,5 @@ So far this is what's inside:
 Memory mapping is something that is missing sorely.
 
 The device tree in this repo is for RPi, but considering that it isn't particularly complex, it shouldn't be a huge issue to adapt it for other devices.
+
+`main.c` just has a quick test to see if it is working (a cool bouncing square).
