@@ -86,33 +86,64 @@ static int oled_fb_open(struct fb_info *info, int user){
 
 static ssize_t oled_fb_write(struct fb_info *info, const char __user *buf,
                              size_t count, loff_t *ppos){
-    char mybuf[10];
-    int i, ret;
-    i = count > 9 ? 9 : count;
-    ret = copy_from_user(mybuf, buf, i);
+    struct oled_info *oinfo = oled_find_info_by_fb_info(info);
+    int ret;
+    size_t bytes_to_copy = 128 * 8;
+
+    if (bytes_to_copy > count)
+        bytes_to_copy = count;
+
+    ret = copy_from_user(oinfo->buf, buf, bytes_to_copy);
     if (ret < 0){
         pr_err("couldn't copy from user: %d\n", ret);
     }
-    mybuf[9] = 0;
-    pr_info("oled_fb_write: %s\n", mybuf);
-    return count;
+    oled_update_screen(oinfo);
+    return bytes_to_copy;
 }
 
 static ssize_t oled_fb_read(struct fb_info *info, char __user *buf,
                             size_t count, loff_t *ppos){
-    char back[] = "test read";
+    struct oled_info *oinfo;
+    char* tempstr;
     int ret;
-    size_t len = strlen(back);
-
-    if (*ppos >= len){
+    if (*ppos >= 64)
         return 0;
-    }
-    ret = copy_to_user(buf, back, strlen(back));
+
+    oinfo = oled_find_info_by_fb_info(info);
+    tempstr = kzalloc(100, GFP_KERNEL);
+
+    sprintf(tempstr, "page %d: 0x%02x 0x%02x 0x%02x 0x%02x "
+                              "0x%02x 0x%02x 0x%02x 0x%02x "
+                              "0x%02x 0x%02x 0x%02x 0x%02x "
+                              "0x%02x 0x%02x 0x%02x 0x%02x\n",
+            (int)(*ppos / 8),
+            oinfo->buf[*ppos * 16],
+            oinfo->buf[*ppos * 16 + 1],
+            oinfo->buf[*ppos * 16 + 2],
+            oinfo->buf[*ppos * 16 + 3],
+            oinfo->buf[*ppos * 16 + 4],
+            oinfo->buf[*ppos * 16 + 5],
+            oinfo->buf[*ppos * 16 + 6],
+            oinfo->buf[*ppos * 16 + 7],
+            oinfo->buf[*ppos * 16 + 8],
+            oinfo->buf[*ppos * 16 + 9],
+            oinfo->buf[*ppos * 16 + 10],
+            oinfo->buf[*ppos * 16 + 11],
+            oinfo->buf[*ppos * 16 + 12],
+            oinfo->buf[*ppos * 16 + 13],
+            oinfo->buf[*ppos * 16 + 14],
+            oinfo->buf[*ppos * 16 + 15]);
+
+    ++*ppos;
+    ret = copy_to_user(buf, tempstr, strlen(tempstr));
     if (ret < 0){
-        pr_err("Could not copy stuff to user! Error: %d\n", ret);
+        pr_err("Could not copy data to user! Error: %d\n", ret);
     }
-    *ppos += len;
-    return len;
+
+    ret = strnlen(tempstr, 100);
+    kfree(tempstr);
+
+    return ret;
 }
 
 static int oled_fb_release(struct fb_info *info, int user){
@@ -135,18 +166,12 @@ static int oled_fb_blank(int blank, struct fb_info *info){
         return -ENOSYS;
     }
 
-    /*oled_send_message(oinfo->client, CMD_SET_START_COL, SIZE_SET_START_COL);
-    oled_send_message(oinfo->client, CMD_SET_END_COL, SIZE_SET_END_COL);
-
-    memset(oinfo->buf, 0, 128 * 8);
-
-    oled_update_screen(oinfo);*/
     return 0;
 }
 
 static void oled_fb_fillrect(struct fb_info *info, const struct fb_fillrect *rect){
     struct oled_info *oinfo;
-    size_t x, y, pos;
+    size_t x, y;
     uint8_t color;
     if (rect->dx + rect->width > 128){
         pr_err("Width is too big!\n");
@@ -185,6 +210,8 @@ static void oled_fb_copyarea(struct fb_info *info, const struct fb_copyarea *reg
         }
     }
 
+
+    // TODO: thinking of it, this can't be right. test it, and fix it.
     for (x = 0; x < region->width; ++x){
         for (y = 0; y < region->height; ++y){
             oinfo->buf[(int)((y + region->dy) / 8) * 128 + x + region->dx] =
@@ -218,14 +245,16 @@ static struct fb_ops fops = {
     .fb_read = oled_fb_read,
     .fb_release = oled_fb_release,
     .fb_fillrect = oled_fb_fillrect,
-    .fb_copyarea = oled_fb_copyarea
+    .fb_copyarea = oled_fb_copyarea,
+    .fb_imageblit = oled_fb_imageblit
 };
 
+/*
 static const struct fb_fix_screeninfo fix_screeninfo = {
     .id = "myoled",
     .visual = FB_VISUAL_MONO10,
     .type = FB_TYPE_PACKED_PIXELS
-};
+};*/
 
 static const struct fb_var_screeninfo var_screeninfo = {
     .xres = 64,
@@ -253,6 +282,7 @@ static const struct fb_var_screeninfo var_screeninfo = {
 static int oled_probe(struct i2c_client *client){
     int ret, idx;
     struct fb_info *finfo;
+    struct fb_fix_screeninfo *fix_screeninfo;
     struct oled_info *oinfo;
 
     idx = oled_get_free_index();
@@ -274,17 +304,26 @@ static int oled_probe(struct i2c_client *client){
     }
     msleep(100);
     finfo = kzalloc(sizeof(struct fb_info), GFP_KERNEL);
-
-    finfo->fbops = &fops;
-    finfo->var = var_screeninfo;
-    finfo->fix = fix_screeninfo;
-
-    register_framebuffer(finfo);
+    fix_screeninfo = kzalloc(sizeof(struct fb_fix_screeninfo), GFP_KERNEL);
 
     oinfo = kzalloc(sizeof(struct oled_info), GFP_KERNEL);
     oinfo->finfo = finfo;
     oinfo->client = client;
     oinfo->buf = kzalloc(128 * 8, GFP_KERNEL);
+
+    strncpy(fix_screeninfo->id, client->name, strnlen(client->name, 16));
+    fix_screeninfo->visual = FB_VISUAL_MONO10;
+    fix_screeninfo->type = FB_TYPE_PACKED_PIXELS;
+    fix_screeninfo->smem_start = *oinfo->buf;
+    fix_screeninfo->smem_len = 128 * 8;
+
+    finfo->fbops = &fops;
+    finfo->var = var_screeninfo;
+    finfo->fix = *fix_screeninfo;
+
+    register_framebuffer(finfo);
+
+
 
     oled_info_list[idx] = oinfo;
     oled_update_screen(oinfo);
