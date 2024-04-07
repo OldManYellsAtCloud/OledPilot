@@ -59,7 +59,6 @@ static void oled_update_screen(struct oled_info *info){
     size_t px, page, idx;
     uint8_t switch_page_cmd[2];
     uint8_t buf[17];
-    pr_info("update screen\n");
     buf[0] = DC_DATA | CO_DATA_ONLY;
     switch_page_cmd[0] = DC_CMD | CO_DATA_ONLY;
 
@@ -79,7 +78,6 @@ static void oled_update_screen(struct oled_info *info){
 }
 
 static int oled_fb_open(struct fb_info *info, int user){
-    pr_info("oled_fb open by user %d\n", user);
     try_module_get(THIS_MODULE);
     return 0;
 }
@@ -88,12 +86,13 @@ static ssize_t oled_fb_write(struct fb_info *info, const char __user *buf,
                              size_t count, loff_t *ppos){
     struct oled_info *oinfo = oled_find_info_by_fb_info(info);
     int ret;
-    size_t bytes_to_copy = 128 * 8;
+    size_t bytes_to_copy = count;
+    if (count + *ppos > 128 * 8){
+        pr_err("Received data doesn't fit buffer. Truncating.\n");
+        bytes_to_copy = 128 * 8 - *ppos;
+    }
 
-    if (bytes_to_copy > count)
-        bytes_to_copy = count;
-
-    ret = copy_from_user(oinfo->buf, buf, bytes_to_copy);
+    ret = copy_from_user(oinfo->buf + *ppos, buf, bytes_to_copy);
     if (ret < 0){
         pr_err("couldn't copy from user: %d\n", ret);
     }
@@ -160,7 +159,7 @@ static int oled_fb_blank(int blank, struct fb_info *info){
         oled_send_message(oinfo->client, CMD_DISPLAY_OFF, SIZE_DISPLAY_OFF);
         break;
     case FB_BLANK_UNBLANK:
-        oled_send_message(oinfo->client, CMD_DISPLAY_OFF, SIZE_DISPLAY_ON);
+        oled_send_message(oinfo->client, CMD_DISPLAY_ON, SIZE_DISPLAY_ON);
         break;
     default:
         return -ENOSYS;
@@ -246,21 +245,17 @@ static struct fb_ops fops = {
     .fb_release = oled_fb_release,
     .fb_fillrect = oled_fb_fillrect,
     .fb_copyarea = oled_fb_copyarea,
-    .fb_imageblit = oled_fb_imageblit
+    .fb_imageblit = oled_fb_imageblit,
+    .fb_blank = oled_fb_blank,
 };
-
-/*
-static const struct fb_fix_screeninfo fix_screeninfo = {
-    .id = "myoled",
-    .visual = FB_VISUAL_MONO10,
-    .type = FB_TYPE_PACKED_PIXELS
-};*/
 
 static const struct fb_var_screeninfo var_screeninfo = {
     .xres = 64,
     .yres = 128,
     .bits_per_pixel = 1,
     .grayscale = 1,
+    .width = 128,
+    .height = 64,
     .blue = {
         .offset = 0,
         .length = 1
@@ -322,8 +317,6 @@ static int oled_probe(struct i2c_client *client){
     finfo->fix = *fix_screeninfo;
 
     register_framebuffer(finfo);
-
-
 
     oled_info_list[idx] = oinfo;
     oled_update_screen(oinfo);
